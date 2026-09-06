@@ -11,35 +11,40 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _get_env(name: str, default: str = "") -> str:
+    """Read an environment value and remove optional surrounding quotes."""
+    return os.getenv(name, default).strip().strip('"').strip("'")
+
+
 class Config:
     """Application configuration loaded from environment variables."""
 
     # LLM Provider
-    LLM_PROVIDER: Literal["openai", "anthropic"] = os.getenv("LLM_PROVIDER", "openai")
+    LLM_PROVIDER: Literal["openai", "anthropic"] = _get_env("LLM_PROVIDER", "openai")
 
     # OpenAI
-    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_API_KEY: str = _get_env("OPENAI_API_KEY")
+    OPENAI_MODEL: str = _get_env("OPENAI_MODEL", "gpt-4o-mini")
 
     # Anthropic
-    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-    ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-1")
+    ANTHROPIC_API_KEY: str = _get_env("ANTHROPIC_API_KEY")
+    ANTHROPIC_MODEL: str = _get_env("ANTHROPIC_MODEL", "claude-haiku-4-5")
 
     # LangSmith
-    LANGSMITH_API_KEY: str = os.getenv("LANGSMITH_API_KEY", "")
-    LANGSMITH_PROJECT: str = os.getenv("LANGSMITH_PROJECT", "codebase-analysis")
-    LANGSMITH_TRACING_V2: str = os.getenv("LANGSMITH_TRACING_V2", "true")
+    LANGSMITH_API_KEY: str = _get_env("LANGSMITH_API_KEY")
+    LANGSMITH_PROJECT: str = _get_env("LANGSMITH_PROJECT", "codebase-analysis")
+    LANGSMITH_TRACING_V2: str = _get_env("LANGSMITH_TRACING_V2", "true")
 
     # Service
     SERVICE_PORT: int = int(os.getenv("SERVICE_PORT", "8000"))
-    SERVICE_HOST: str = os.getenv("SERVICE_HOST", "0.0.0.0")
+    SERVICE_HOST: str = _get_env("SERVICE_HOST", "0.0.0.0")
 
     # Workspace
-    WORKSPACE_ROOT: str = os.getenv("WORKSPACE_ROOT", "/tmp/workspaces")
-    WORKSPACE_CLEANUP: bool = os.getenv("WORKSPACE_CLEANUP", "true").lower() == "true"
+    WORKSPACE_ROOT: str = _get_env("WORKSPACE_ROOT", "/tmp/workspaces")
+    WORKSPACE_CLEANUP: bool = _get_env("WORKSPACE_CLEANUP", "true").lower() == "true"
 
     # Logging
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+    LOG_LEVEL: str = _get_env("LOG_LEVEL", "INFO")
 
     @classmethod
     def validate(cls) -> None:

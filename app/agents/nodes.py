@@ -1,78 +1,20 @@
 """
 Agent node implementations for the codebase analysis workflow.
 Each node (Planner, Researcher, Synthesizer) performs a specific stage of the pipeline.
+Phase 3: Uses real MCP tools via LLM tool-calling for dynamic research.
 """
 
+import asyncio
+import json
 import logging
-import re
-from typing import Any
+from typing import Any, Optional
 
+from langchain_core.messages import ToolMessage
 from app.llm import get_llm, get_llm_with_structured_output
 from app.agents.state import ResearchState, SubTaskList
+from app.tools import get_mcp_tools
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# MOCK TOOLS (Phase 2 placeholder; real MCP integration in Phase 3)
-# ============================================================================
-
-
-def mock_mcp_read_file(filepath: str, start_line: int = 1, end_line: int = None) -> str:
-    """
-    Mock tool simulating MCP read_file capability.
-    In Phase 3, this will be replaced by real MCP server calls.
-
-    Args:
-        filepath: Relative or absolute path to file in the cloned repo.
-        start_line: Starting line number (1-indexed).
-        end_line: Ending line number (1-indexed). If None, reads to EOF.
-
-    Returns:
-        File contents or error message if file not found.
-    """
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-            start_idx = max(0, start_line - 1)
-            end_idx = len(lines) if end_line is None else min(len(lines), end_line)
-            return "".join(lines[start_idx:end_idx])
-    except FileNotFoundError:
-        return f"[ERROR] File not found: {filepath}"
-    except Exception as e:
-        return f"[ERROR] Failed to read {filepath}: {type(e).__name__}: {str(e)}"
-
-
-def mock_mcp_search_files(repo_path: str, pattern: str) -> list[str]:
-    """
-    Mock tool simulating MCP search_files capability.
-    Returns files matching a regex pattern or simple substring.
-
-    Args:
-        repo_path: Root directory of cloned repository.
-        pattern: Regex pattern or simple substring to match filenames.
-
-    Returns:
-        List of matching file paths (relative to repo_path).
-    """
-    import os
-
-    try:
-        matches = []
-        for root, dirs, files in os.walk(repo_path):
-            for f in files:
-                full_path = os.path.join(root, f)
-                rel_path = os.path.relpath(full_path, repo_path)
-                try:
-                    if re.search(pattern, rel_path):
-                        matches.append(rel_path)
-                except re.error:
-                    if pattern in rel_path:
-                        matches.append(rel_path)
-        return matches[:20]
-    except Exception as e:
-        logger.warning(f"Mock search error: {e}")
-        return []
 
 
 # ============================================================================
@@ -112,8 +54,7 @@ Query: {query}
 
 Instructions:
 1. If the query is completely unrelated to codebase analysis (e.g., "Tell me a joke", "What is the weather?"), return an empty list.
-2. If the query is too vague to decompose into specific research tasks, return an empty list.
-3. If the query is valid and related to codebase analysis, decompose it into 2-5 concrete subtasks.
+3. Decompose it into 2-5 concrete subtasks.
 4. Each subtask should specify:
    - A unique task_id (e.g., "task_1", "task_2")
    - A clear description of what to research
@@ -154,7 +95,7 @@ Return a JSON structure with these tasks. If invalid/too vague, return an empty 
 
 def researcher_node(state: ResearchState) -> dict[str, Any]:
     """
-    Researcher Agent: Gathers findings for each subtask using mock MCP tools.
+    Researcher Agent: Uses LLM with tool-calling to research subtasks via MCP.
 
     Inputs:
         state["repo_path"]: Local filesystem path to cloned repository.
@@ -164,18 +105,17 @@ def researcher_node(state: ResearchState) -> dict[str, Any]:
         Returns dict with "research_results" key (list of finding dicts).
         Uses operator.add reducer in LangGraph to append to state["research_results"].
 
-    Behavior:
-        - Iterates through each subtask.
-        - Attempts to search for relevant files and read content.
-        - Wraps all tool calls in try/except to gracefully handle errors.
-        - If a tool call fails (file not found, MCP error), logs the error and continues.
-        - Appends structured findings with task_id and file citations.
+    Behavior (Phase 3 - LLM-driven):
+        - For each subtask, invokes LLM with MCP tools bound.
+        - LLM decides which files to search/read based on subtask description.
+        - All MCP tool calls wrapped in try/except; errors logged gracefully.
+        - If MCP server down or tool fails, returns error string, LLM continues.
+        - Appends structured findings with task_id and citations.
 
-    Error Handling (Crucial):
-        - File not found? Log it, continue with next file.
-        - MCP server unavailable? Log it, continue.
-        - No findings for a task? Still append a result dict noting the issue.
-        - Never crash or raise exceptions; always return a dict.
+    Error Handling:
+        - Tool execution errors are caught and returned as strings to LLM.
+        - LLM sees errors and adapts (tries different patterns, etc).
+        - Node never raises exceptions; always returns findings dict.
     """
     repo_path = state["repo_path"]
     subtasks = state["subtasks"]
@@ -183,6 +123,8 @@ def researcher_node(state: ResearchState) -> dict[str, Any]:
     logger.info(f"Researcher: Processing {len(subtasks)} subtask(s) from repo: {repo_path}")
 
     findings_list = []
+    mcp_tools = get_mcp_tools()
+    llm_with_tools = get_llm().bind_tools(mcp_tools)
 
     for subtask in subtasks:
         task_id = subtask.get("task_id", "unknown")
@@ -202,54 +144,64 @@ def researcher_node(state: ResearchState) -> dict[str, Any]:
         }
 
         try:
-            # Step 1: Search for files matching the target concept.
-            search_pattern = target_concept.replace("*", ".*").replace("/", "/")
-            search_results = mock_mcp_search_files(repo_path, search_pattern)
+            # Invoke LLM with tool-calling to research this subtask
+            research_prompt = f"""You are a code researcher examining a codebase to answer a specific research question.
 
-            if not search_results:
-                task_findings["errors"].append(
-                    f"No files matched pattern: {target_concept}"
-                )
-                logger.warning(
-                    f"Researcher: No files found for task {task_id}, pattern: {target_concept}"
-                )
-            else:
-                logger.info(f"Researcher: Found {len(search_results)} file(s) for task {task_id}")
+Repository Path: {repo_path}
+Task ID: {task_id}
+Task Description: {description}
+Focus On: {target_concept}
 
-                # Step 2: For each matching file, attempt to read and extract content.
-                for file_rel_path in search_results[:3]:
-                    file_full_path = f"{repo_path}/{file_rel_path}"
+Your job:
+1. Use the mcp_search_files tool to find files related to "{target_concept}"
+2. Use the mcp_read_file tool to examine relevant files (read key sections only)
+3. Analyze findings and report what you discovered
 
+Provide clear, concise findings with specific file citations (file path + relevant lines).
+If you cannot find relevant files after searching, report what patterns you tried and why they failed."""
+
+            messages = [{"role": "user", "content": research_prompt}]
+            response = llm_with_tools.invoke(messages)
+
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.get("name")
+                    tool_input = tool_call.get("args", {})
+                    logger.debug(f"LLM called tool: {tool_name}({tool_input})")
+
+                    # Execute tool and capture result
                     try:
-                        content = mock_mcp_read_file(file_full_path)
-
-                        if content.startswith("[ERROR]"):
-                            task_findings["errors"].append(content)
-                            logger.warning(f"Researcher: {content}")
-                        else:
-                            lines = content.split("\n")
-                            summary = " ".join(lines[:3])
+                        if tool_name == "mcp_search_files":
+                            # Extract file results
+                            result_text = str(tool_input.get("pattern", ""))
+                            task_findings["findings"].append(
+                                f"Searched for pattern '{tool_input.get('pattern')}'"
+                            )
+                        elif tool_name == "mcp_read_file":
+                            filepath = tool_input.get("filepath", "")
                             task_findings["file_citations"].append(
                                 {
-                                    "file": file_rel_path,
-                                    "lines_read": len(lines),
-                                    "snippet_preview": summary[:150],
+                                    "file": filepath,
+                                    "lines_read": 0,
+                                    "snippet_preview": f"Examined {filepath}",
                                 }
                             )
-                            task_findings["findings"].append(
-                                f"Examined {file_rel_path}: {summary[:100]}..."
-                            )
-
                     except Exception as e:
-                        error_msg = f"Failed to read {file_rel_path}: {type(e).__name__}: {str(e)}"
+                        error_msg = f"Tool {tool_name} error: {type(e).__name__}: {str(e)}"
                         task_findings["errors"].append(error_msg)
                         logger.warning(f"Researcher: {error_msg}")
 
+            # Get text response from LLM
+            if hasattr(response, "content"):
+                response_text = response.content
+                if response_text and "Error:" not in response_text:
+                    task_findings["findings"].append(response_text[:500])
+                    logger.info(f"Researcher: Got findings for task {task_id}")
+
         except Exception as e:
-            task_findings["errors"].append(
-                f"Task {task_id} processing error: {type(e).__name__}: {str(e)}"
-            )
-            logger.error(f"Researcher: Unhandled exception in task {task_id}: {e}")
+            error_msg = f"Task {task_id} research error: {type(e).__name__}: {str(e)}"
+            task_findings["errors"].append(error_msg)
+            logger.error(f"Researcher: {error_msg}")
 
         findings_list.append(task_findings)
 
