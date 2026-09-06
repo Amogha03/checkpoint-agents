@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codebase-analyzer"
 version = "0.1.0"
-description = "Clone and scan service for automated codebase analysis"
+description = "Service for automated codebase analysis"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
@@ -13,7 +13,11 @@ dependencies = [
     "pydantic",
     "langgraph",
     "langchain",
+    "langchain-openai",
+    "langchain-anthropic",
+    "python-dotenv",
     "gitpython",
+    "mcp",
 ]
 
 [tool.setuptools.packages.find]

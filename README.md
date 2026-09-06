@@ -1,4 +1,4 @@
-# Clone & Scan Codebase Analysis Service
+# Codebase Analysis Service
 
 ## Problem Statement (Codebase Analysis)
 
