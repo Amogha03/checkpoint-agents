@@ -6,6 +6,7 @@ Integrates Phase 3 MCP tool support for dynamic codebase analysis.
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from dotenv import load_dotenv
@@ -24,8 +25,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Codebase Analysis Service")
-
 # Global MCP manager (initialized on startup)
 mcp_manager: MCPClientManager = None
 
@@ -41,9 +40,9 @@ class ResearchResponse(BaseModel):
     report: str = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize MCP connections on application startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize MCP connections and close them during application shutdown."""
     global mcp_manager
     try:
         logger.info("Initializing MCP servers...")
@@ -62,14 +61,15 @@ async def startup_event():
         logger.error(f"MCP initialization failed: {e}")
         logger.warning("Service will run with limited capabilities")
 
+    try:
+        yield
+    finally:
+        if mcp_manager:
+            await mcp_manager.close()
+            logger.info("✓ MCP connections closed")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Close MCP connections on application shutdown."""
-    global mcp_manager
-    if mcp_manager:
-        await mcp_manager.close()
-        logger.info("✓ MCP connections closed")
+
+app = FastAPI(title="Codebase Analysis Service", lifespan=lifespan)
 
 
 @app.get("/health")

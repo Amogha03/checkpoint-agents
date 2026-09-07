@@ -2,9 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install git, ca-certificates, AND Node.js/npm for npx-based MCP servers
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends git ca-certificates \
-	&& rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends git ca-certificates nodejs npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure the local workspace directory for cloned repos exists
+RUN mkdir -p /tmp/workspaces
 
 COPY pyproject.toml .
 COPY app/ app/
