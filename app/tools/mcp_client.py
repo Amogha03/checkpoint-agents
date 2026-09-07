@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import sys
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Optional, Any
 
 from langchain_core.tools import tool
@@ -48,9 +48,8 @@ class MCPClientManager:
         self.filesystem_session: Optional[ClientSession] = None
         self.github_session: Optional[ClientSession] = None
 
-        # Context managers for cleanup
-        self._fs_cm = None
-        self._gh_cm = None
+        # Keeps nested MCP sessions and stdio transports in their owning task.
+        self._exit_stack = AsyncExitStack()
 
         logger.info(f"MCPClientManager initialized with filesystem_root={filesystem_root}")
 
@@ -94,10 +93,12 @@ class MCPClientManager:
                 f"Filesystem server command: npx {' '.join(params.args)}"
             )
 
-            # Create and enter the context manager
-            self._fs_cm = stdio_client(params, errlog=sys.stderr)
-            read_stream, write_stream = await self._fs_cm.__aenter__()
-            self.filesystem_session = ClientSession(read_stream, write_stream)
+            read_stream, write_stream = await self._exit_stack.enter_async_context(
+                stdio_client(params, errlog=sys.stderr)
+            )
+            self.filesystem_session = await self._exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
             await self.filesystem_session.initialize()
 
             logger.info("✓ Connected to Filesystem MCP server")
@@ -132,10 +133,12 @@ class MCPClientManager:
 
             logger.debug("GitHub server command: npx -y @modelcontextprotocol/server-github")
 
-            # Create and enter the context manager
-            self._gh_cm = stdio_client(params, errlog=sys.stderr)
-            read_stream, write_stream = await self._gh_cm.__aenter__()
-            self.github_session = ClientSession(read_stream, write_stream)
+            read_stream, write_stream = await self._exit_stack.enter_async_context(
+                stdio_client(params, errlog=sys.stderr)
+            )
+            self.github_session = await self._exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
             await self.github_session.initialize()
 
             logger.info("✓ Connected to GitHub MCP server")
@@ -158,9 +161,9 @@ class MCPClientManager:
             raise RuntimeError("Not connected to Filesystem MCP server")
 
         logger.debug("Listing Filesystem MCP tools...")
-        tools = await self.filesystem_session.list_tools()
-        logger.info(f"Found {len(tools)} Filesystem tools")
-        return tools
+        result = await self.filesystem_session.list_tools()
+        logger.info(f"Found {len(result.tools)} Filesystem tools")
+        return result.tools
 
     async def list_github_tools(self) -> list[Tool]:
         """
@@ -176,9 +179,9 @@ class MCPClientManager:
             raise RuntimeError("Not connected to GitHub MCP server")
 
         logger.debug("Listing GitHub MCP tools...")
-        tools = await self.github_session.list_tools()
-        logger.info(f"Found {len(tools)} GitHub tools")
-        return tools
+        result = await self.github_session.list_tools()
+        logger.info(f"Found {len(result.tools)} GitHub tools")
+        return result.tools
 
     async def close(self) -> None:
         """
@@ -187,19 +190,10 @@ class MCPClientManager:
         """
         logger.info("Closing MCP server connections...")
 
-        if self._fs_cm:
-            try:
-                await self._fs_cm.__aexit__(None, None, None)
-                logger.info("✓ Filesystem server closed")
-            except Exception as e:
-                logger.warning(f"Error closing Filesystem server: {e}")
-
-        if self._gh_cm:
-            try:
-                await self._gh_cm.__aexit__(None, None, None)
-                logger.info("✓ GitHub server closed")
-            except Exception as e:
-                logger.warning(f"Error closing GitHub server: {e}")
+        try:
+            await self._exit_stack.aclose()
+        except Exception as e:
+            logger.warning(f"Error closing MCP connections: {e}")
 
         logger.info("✓ MCP connections closed")
 
@@ -277,6 +271,11 @@ def set_mcp_manager(manager: "MCPClientManager") -> None:
     logger.info("MCP manager set for tool wrappers")
 
 
+def get_mcp_manager() -> Optional["MCPClientManager"]:
+    """Return the process-wide manager used by the research workflow."""
+    return _mcp_manager
+
+
 @tool
 def mcp_read_file(filepath: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
     """
@@ -326,7 +325,7 @@ def mcp_search_files(repo_path: str, pattern: str) -> str:
 
     Args:
         repo_path: Repository root path
-        pattern: Regex pattern or substring to match filenames
+        pattern: Glob pattern to match paths, such as ``**/*auth*``
 
     Returns:
         JSON-formatted list of matching files or error message

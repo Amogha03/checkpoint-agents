@@ -12,9 +12,45 @@ from typing import Any, Optional
 from langchain_core.messages import ToolMessage
 from app.llm import get_llm, get_llm_with_structured_output
 from app.agents.state import ResearchState, SubTaskList
-from app.tools import get_mcp_tools
+from app.tools import get_mcp_manager, get_mcp_tools
 
 logger = logging.getLogger(__name__)
+
+
+DISCOVERY_PATTERNS = (
+    "**/*auth*",
+    "**/*login*",
+    "**/*token*",
+    "**/*session*",
+    "**/*security*",
+    "**/pyproject.toml",
+    "**/requirements*.txt",
+    "**/.env*",
+)
+
+
+async def _discover_repository(repo_path: str, mcp_manager: Any) -> str:
+    """Build a grounded file inventory before asking the LLM for conclusions."""
+    discovered: list[str] = []
+    for pattern in DISCOVERY_PATTERNS:
+        result = await mcp_manager.call_tool(
+            "filesystem",
+            "search_files",
+            {"path": repo_path, "pattern": pattern},
+        )
+        if result and not result.startswith("Error "):
+            discovered.append(f"Pattern {pattern}:\n{result}")
+    return "\n\n".join(discovered) or "No matching files were returned by MCP."
+
+
+def _line_citation(filepath: str, content: str) -> dict[str, str]:
+    """Create a citation whose line range is derived from returned content."""
+    line_count = max(1, len(content.splitlines()))
+    return {
+        "file": filepath,
+        "lines_read": f"1-{line_count}",
+        "snippet_preview": content[:4000],
+    }
 
 
 # ============================================================================
@@ -58,7 +94,9 @@ Instructions:
 4. Each subtask should specify:
    - A unique task_id (e.g., "task_1", "task_2")
    - A clear description of what to research
-   - A target_concept or file pattern to focus on (e.g., "auth.py", "middleware/*", "JWT validation")
+    - A broad concept or glob pattern to focus on (e.g., "authentication", "**/*auth*", "JWT validation")
+
+Never assume that directories such as auth/, middleware/, or api/auth/ exist. The researcher will verify paths against the cloned repository.
 
 Return a JSON structure with these tasks. If invalid/too vague, return an empty tasks list."""
 
@@ -93,7 +131,7 @@ Return a JSON structure with these tasks. If invalid/too vague, return an empty 
 # ============================================================================
 
 
-def researcher_node(state: ResearchState) -> dict[str, Any]:
+async def researcher_node(state: ResearchState) -> dict[str, Any]:
     """
     Researcher Agent: Uses LLM with tool-calling to research subtasks via MCP.
 
@@ -124,6 +162,24 @@ def researcher_node(state: ResearchState) -> dict[str, Any]:
 
     findings_list = []
     mcp_tools = get_mcp_tools()
+    mcp_manager = get_mcp_manager()
+    if not mcp_manager:
+        return {
+            "research_results": [
+                {
+                    "task_id": "mcp_unavailable",
+                    "description": "MCP manager initialization",
+                    "findings": [],
+                    "file_citations": [],
+                    "errors": ["MCP manager is not initialized"],
+                }
+            ]
+        }
+    try:
+        repository_inventory = await _discover_repository(repo_path, mcp_manager)
+    except Exception as exc:
+        repository_inventory = f"Repository discovery failed: {type(exc).__name__}: {exc}"
+        logger.warning("Researcher: %s", repository_inventory)
     llm_with_tools = get_llm().bind_tools(mcp_tools)
 
     for subtask in subtasks:
@@ -153,50 +209,74 @@ Task Description: {description}
 Focus On: {target_concept}
 
 Your job:
-1. Use the mcp_search_files tool to find files related to "{target_concept}"
-2. Use the mcp_read_file tool to examine relevant files (read key sections only)
-3. Analyze findings and report what you discovered
+1. Start from the verified repository inventory below; do not invent paths.
+2. Use the mcp_search_files tool with glob patterns to find additional relevant files.
+3. Use the mcp_read_file tool to examine files returned by MCP.
+4. Analyze only content returned by MCP and report what you discovered.
 
-Provide clear, concise findings with specific file citations (file path + relevant lines).
-If you cannot find relevant files after searching, report what patterns you tried and why they failed."""
+Verified repository inventory:
+{repository_inventory}
+
+Provide clear, concise findings with citations only to files actually returned and read by MCP.
+If no relevant implementation exists, say "No evidence found in the files searched" and list the verified search patterns. Do not claim that the repository has no vulnerability solely because a guessed directory is absent."""
 
             messages = [{"role": "user", "content": research_prompt}]
-            response = llm_with_tools.invoke(messages)
+            for _ in range(6):
+                response = await llm_with_tools.ainvoke(messages)
+                messages.append(response)
+                tool_calls = getattr(response, "tool_calls", []) or []
+                if not tool_calls:
+                    response_text = response.content
+                    if response_text:
+                        task_findings["findings"].append(response_text)
+                    break
 
-            if hasattr(response, "tool_calls") and response.tool_calls:
-                for tool_call in response.tool_calls:
+                for tool_call in tool_calls:
                     tool_name = tool_call.get("name")
                     tool_input = tool_call.get("args", {})
                     logger.debug(f"LLM called tool: {tool_name}({tool_input})")
-
-                    # Execute tool and capture result
                     try:
                         if tool_name == "mcp_search_files":
-                            # Extract file results
-                            result_text = str(tool_input.get("pattern", ""))
-                            task_findings["findings"].append(
-                                f"Searched for pattern '{tool_input.get('pattern')}'"
+                            result = await mcp_manager.call_tool(
+                                "filesystem",
+                                "search_files",
+                                {
+                                    "path": tool_input.get("repo_path", repo_path),
+                                    "pattern": tool_input.get("pattern", "*"),
+                                },
                             )
                         elif tool_name == "mcp_read_file":
                             filepath = tool_input.get("filepath", "")
-                            task_findings["file_citations"].append(
-                                {
-                                    "file": filepath,
-                                    "lines_read": 0,
-                                    "snippet_preview": f"Examined {filepath}",
-                                }
+                            arguments = {"path": filepath}
+                            if tool_input.get("start_line", 1) > 1:
+                                arguments["startLine"] = tool_input["start_line"]
+                            if tool_input.get("end_line"):
+                                arguments["endLine"] = tool_input["end_line"]
+                            result = await mcp_manager.call_tool(
+                                "filesystem", "read_file", arguments
                             )
+                            if result and not result.startswith("Error "):
+                                task_findings["file_citations"].append(
+                                    {
+                                        "file": filepath,
+                                        **_line_citation(filepath, result),
+                                    }
+                                )
+                            else:
+                                task_findings["errors"].append(result)
+                        else:
+                            result = f"Error: unsupported tool {tool_name}"
+                        messages.append(
+                            ToolMessage(content=result, tool_call_id=tool_call["id"])
+                        )
                     except Exception as e:
                         error_msg = f"Tool {tool_name} error: {type(e).__name__}: {str(e)}"
                         task_findings["errors"].append(error_msg)
-                        logger.warning(f"Researcher: {error_msg}")
-
-            # Get text response from LLM
-            if hasattr(response, "content"):
-                response_text = response.content
-                if response_text and "Error:" not in response_text:
-                    task_findings["findings"].append(response_text[:500])
-                    logger.info(f"Researcher: Got findings for task {task_id}")
+                        messages.append(
+                            ToolMessage(content=error_msg, tool_call_id=tool_call["id"])
+                        )
+            else:
+                task_findings["errors"].append("Tool-call limit reached")
 
         except Exception as e:
             error_msg = f"Task {task_id} research error: {type(e).__name__}: {str(e)}"
@@ -328,22 +408,39 @@ Please rephrase your query to focus on:
             for error in errors:
                 findings_text += f"  - {error}\n"
 
-    synthesis_prompt = f"""You are a senior code analyst. Synthesize the following research findings into a professional, well-organized Markdown report.
+    synthesis_prompt = f"""You are the lead security analyst. Produce a new report from the evidence below; do not merely repeat the researcher notes.
 
 **Original Query:**
 {query}
 
-**Raw Research Findings:**
+**Evidence Dossier:**
 {findings_text}
 
-**Instructions:**
-1. Create a structured Markdown report with sections: Query, Summary, Findings, Limitations.
-2. For each finding, include EXACT citations like "src/auth.py (Lines 42-55)" based on the file paths and line counts provided.
-3. Do NOT invent sources; only cite files and line ranges explicitly mentioned in the raw findings.
-4. If a finding spans multiple files, list all relevant sources.
-5. Use clear headers and bullet points for readability.
-6. Include a Limitations section noting any files not found or errors encountered.
-7. Ensure all claims are traceable back to specific code locations.
+**Synthesis workflow:**
+1. Identify what the repository actually does from the returned code, then compare that architecture with the query.
+2. Consolidate overlapping task results into meaningful security findings. Do not produce one shallow section per task.
+3. Distinguish confirmed vulnerabilities, security-relevant observations, and absence of an applicable feature.
+4. For each confirmed or materially relevant observation, explain impact and why the code supports it.
+5. Prioritize findings as Critical, High, Medium, Low, or Informational, and state confidence based on the evidence read.
+6. Discuss credential handling, access control, sessions, dependencies, and input/prompt handling only when the dossier contains relevant evidence.
+7. Cite only files and line ranges in the Sources allowlist. Never invent filenames, line ranges, snippets, vulnerabilities, or repository structure.
+8. If a claim has no supporting source, write "Not verified from the files read" instead of presenting it as a finding.
+9. If no relevant implementation exists, say "No evidence found in the files searched" and explain the verified search scope. Do not claim the repository is vulnerability-free.
+10. End with concrete remediation recommendations only for confirmed or materially relevant observations.
+
+**Required report structure:**
+# Security & Access Control Analysis Report
+## Query
+## Executive Summary
+## Repository Scope
+## Key Findings & Codebase Localization
+### [severity] Finding title
+- Finding
+- Impact
+- Evidence
+- Recommendation
+## Citations
+## Limitations
 
 Generate the final report now:"""
 
@@ -364,8 +461,8 @@ Generate the final report now:"""
 ## Raw Findings
 {findings_text}
 
-## Error Details
-{type(e).__name__}: {str(e)}
+## Limitations
+The report could not be synthesized from the collected evidence. Review the service logs for the internal failure details.
 """
 
     return {**state, "final_report": final_report}

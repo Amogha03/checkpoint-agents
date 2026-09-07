@@ -9,8 +9,9 @@ Exports:
 
 from app.tools.mcp_client import (
     MCPClientManager,
+    get_mcp_manager,
     get_mcp_tools,
     set_mcp_manager,
 )
 
-__all__ = ["MCPClientManager", "get_mcp_tools", "set_mcp_manager"]
+__all__ = ["MCPClientManager", "get_mcp_manager", "get_mcp_tools", "set_mcp_manager"]
