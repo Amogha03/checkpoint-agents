@@ -7,6 +7,8 @@ Phase 3: Uses real MCP tools via LLM tool-calling for dynamic research.
 import asyncio
 import json
 import logging
+import os
+import re
 from typing import Any, Optional
 
 from langchain_core.messages import ToolMessage
@@ -29,18 +31,82 @@ DISCOVERY_PATTERNS = (
 )
 
 
-async def _discover_repository(repo_path: str, mcp_manager: Any) -> str:
+async def _discover_repository(repo_path: str, mcp_manager: Any) -> tuple[str, list[str]]:
     """Build a grounded file inventory before asking the LLM for conclusions."""
     discovered: list[str] = []
+    discovered_paths: list[str] = []
     for pattern in DISCOVERY_PATTERNS:
         result = await mcp_manager.call_tool(
             "filesystem",
             "search_files",
             {"path": repo_path, "pattern": pattern},
         )
-        if result and not result.startswith("Error "):
+        if result and not _is_mcp_error(result):
             discovered.append(f"Pattern {pattern}:\n{result}")
-    return "\n\n".join(discovered) or "No matching files were returned by MCP."
+            for path in _extract_paths(result, repo_path):
+                if path not in discovered_paths:
+                    discovered_paths.append(path)
+    inventory = "\n\n".join(discovered) or "No matching files were returned by MCP."
+    return inventory, discovered_paths
+
+
+def _extract_paths(result: str, repo_path: str) -> list[str]:
+    """Extract plausible file paths from an MCP search result."""
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    try:
+        collect(json.loads(result))
+    except json.JSONDecodeError:
+        values.extend(result.splitlines())
+
+    paths: list[str] = []
+    for value in values:
+        candidate = value.strip().strip('"\'`,[]')
+        if not candidate or _is_mcp_error(candidate):
+            continue
+        candidate = _resolve_repo_path(candidate, repo_path)
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _is_mcp_error(result: str) -> bool:
+    """Identify MCP error text that must not be treated as file evidence."""
+    lowered = result.strip().casefold()
+    return (
+        lowered.startswith("error")
+        or "enoent" in lowered
+        or "no such file" in lowered
+        or lowered == "no matches found"
+    )
+
+
+def _resolve_repo_path(filepath: str, repo_path: str) -> str:
+    """Resolve model-supplied paths within the current cloned repository."""
+    candidate = filepath.strip().strip('"\'`,[]')
+    normalized_repo = os.path.normpath(repo_path)
+    if not os.path.isabs(candidate):
+        return os.path.normpath(os.path.join(normalized_repo, candidate.lstrip("./")))
+    normalized_candidate = os.path.normpath(candidate)
+    if normalized_candidate == normalized_repo or normalized_candidate.startswith(
+        f"{normalized_repo}{os.sep}"
+    ):
+        return normalized_candidate
+    if "/workspaces/" in candidate:
+        suffix = candidate.split("/workspaces/", 1)[1].split("/", 1)
+        if len(suffix) == 2:
+            return os.path.normpath(os.path.join(normalized_repo, suffix[1]))
+    return os.path.normpath(os.path.join(normalized_repo, candidate.lstrip("/")))
 
 
 def _line_citation(filepath: str, content: str) -> dict[str, str]:
@@ -48,9 +114,55 @@ def _line_citation(filepath: str, content: str) -> dict[str, str]:
     line_count = max(1, len(content.splitlines()))
     return {
         "file": filepath,
-        "lines_read": f"1-{line_count}",
+        "lines_read": f"Lines 1-{line_count}",
         "snippet_preview": content[:4000],
     }
+
+
+def _relative_path(filepath: str, repo_path: str) -> str:
+    """Render an MCP path relative to the cloned repository root."""
+    normalized = filepath.replace("\\", "/")
+    normalized_repo = repo_path.replace("\\", "/").rstrip("/")
+    prefix = f"{normalized_repo}/"
+    if normalized.startswith(prefix):
+        relative = normalized[len(prefix) :]
+    elif "/workspaces/" in normalized:
+        relative = normalized.split("/workspaces/", 1)[1].split("/", 1)[-1]
+    else:
+        relative = normalized.lstrip("/")
+    return f"/{relative.lstrip('/')}" if relative else "/"
+
+
+def _normalize_report_paths(report: str) -> str:
+    """Remove temporary workspace prefixes from model-generated citations."""
+    return re.sub(
+        r"/(?:private/)?tmp/workspaces/[^/\s)`]+(/[^\s)`]*)",
+        r"\1",
+        report,
+    )
+
+
+def _merge_citations(report: str, citation_lines: list[str]) -> str:
+    """Keep one Citations section while retaining generated report content."""
+    missing_lines: list[str] = []
+    for citation_line in citation_lines:
+        match = re.match(r"- (.+) \((Lines?\s+\d+(?:\s*[-–]\s*\d+)?)\)$", citation_line)
+        if not match:
+            missing_lines.append(citation_line)
+            continue
+        filepath, lines_read = match.groups()
+        relative_path = filepath.lstrip("/")
+        path_pattern = rf"`?/?{re.escape(relative_path)}`?"
+        if not re.search(rf"{path_pattern}\s*\({re.escape(lines_read)}\)", report):
+            missing_lines.append(citation_line)
+
+    if not missing_lines:
+        return report
+    citation_block = "\n".join(missing_lines)
+    heading = re.search(r"(?im)^##\s+Citations\s*$", report)
+    if heading:
+        return report[: heading.end()] + "\n" + citation_block + report[heading.end() :]
+    return f"{report.rstrip()}\n\n## Citations\n{citation_block}"
 
 
 # ============================================================================
@@ -71,8 +183,8 @@ def planner_node(state: ResearchState) -> ResearchState:
 
     Behavior:
         - Uses configured LLM (OpenAI or Anthropic) with structured output (SubTaskList).
-        - If the query is completely unrelated to codebase analysis or too vague,
-          the LLM returns an empty list of tasks.
+        - Accepts only queries specifically about code security or security vulnerabilities.
+        - If the query is unrelated to security or too vague, returns an empty list of tasks.
         - This triggers conditional routing to the Synthesizer (empty task handling).
 
     Routing Logic (downstream):
@@ -82,23 +194,25 @@ def planner_node(state: ResearchState) -> ResearchState:
     query = state["query"]
     logger.info(f"Planner: Processing query: {query}")
 
-    prompt = f"""You are a query decomposition expert for codebase analysis.
+    prompt = f"""You are a security-query classifier and decomposition expert for codebase analysis.
 
-Your task is to break down the following research query into concrete, actionable subtasks that can be performed by examining a codebase.
+Your task is to decide whether the following query is specifically about security in a codebase, and only then break it into concrete, actionable security research subtasks.
 
 Query: {query}
 
 Instructions:
-1. If the query is completely unrelated to codebase analysis (e.g., "Tell me a joke", "What is the weather?"), return an empty list.
-3. Decompose it into 2-5 concrete subtasks.
+1. Set security_related to true only for questions about security vulnerabilities, threats, security controls, authentication, authorization, access control, secrets, sessions, cryptography, injection, unsafe input handling, dependency security, or similar security concerns in the code.
+2. Set security_related to false for general architecture, code organization, performance, debugging, feature behavior, documentation, refactoring, or unrelated questions, even if they concern the codebase.
+3. If security_related is false, return an empty tasks list.
+4. If security_related is true, decompose it into 2-5 concrete security subtasks.
 4. Each subtask should specify:
    - A unique task_id (e.g., "task_1", "task_2")
    - A clear description of what to research
-    - A broad concept or glob pattern to focus on (e.g., "authentication", "**/*auth*", "JWT validation")
+   - A broad security concept or glob pattern to focus on (e.g., "authentication", "**/*auth*", "JWT validation")
 
 Never assume that directories such as auth/, middleware/, or api/auth/ exist. The researcher will verify paths against the cloned repository.
 
-Return a JSON structure with these tasks. If invalid/too vague, return an empty tasks list."""
+Return a JSON structure with security_related and tasks. If the query is not security-related or is too vague, set security_related to false and return an empty tasks list."""
 
     try:
         llm_with_structured = get_llm_with_structured_output(SubTaskList)
@@ -111,6 +225,8 @@ Return a JSON structure with these tasks. If invalid/too vague, return an empty 
             }
             for task in result.tasks
         ]
+        if not result.security_related:
+            subtasks = []
         logger.info(f"Planner: Generated {len(subtasks)} subtask(s)")
         return {
             **state,
@@ -133,7 +249,7 @@ Return a JSON structure with these tasks. If invalid/too vague, return an empty 
 
 async def researcher_node(state: ResearchState) -> dict[str, Any]:
     """
-    Researcher Agent: Uses LLM with tool-calling to research subtasks via MCP.
+    Researcher Agent: Uses LLM with tool-calling to research security subtasks via MCP.
 
     Inputs:
         state["repo_path"]: Local filesystem path to cloned repository.
@@ -144,7 +260,7 @@ async def researcher_node(state: ResearchState) -> dict[str, Any]:
         Uses operator.add reducer in LangGraph to append to state["research_results"].
 
     Behavior (Phase 3 - LLM-driven):
-        - For each subtask, invokes LLM with MCP tools bound.
+            - For each security subtask, invokes LLM with MCP tools bound.
         - LLM decides which files to search/read based on subtask description.
         - All MCP tool calls wrapped in try/except; errors logged gracefully.
         - If MCP server down or tool fails, returns error string, LLM continues.
@@ -176,9 +292,12 @@ async def researcher_node(state: ResearchState) -> dict[str, Any]:
             ]
         }
     try:
-        repository_inventory = await _discover_repository(repo_path, mcp_manager)
+        repository_inventory, discovered_paths = await _discover_repository(
+            repo_path, mcp_manager
+        )
     except Exception as exc:
         repository_inventory = f"Repository discovery failed: {type(exc).__name__}: {exc}"
+        discovered_paths = []
         logger.warning("Researcher: %s", repository_inventory)
     llm_with_tools = get_llm().bind_tools(mcp_tools)
 
@@ -201,18 +320,19 @@ async def researcher_node(state: ResearchState) -> dict[str, Any]:
 
         try:
             # Invoke LLM with tool-calling to research this subtask
-            research_prompt = f"""You are a code researcher examining a codebase to answer a specific research question.
+            research_prompt = f"""You are a security researcher examining a codebase to answer a specific security question.
 
 Repository Path: {repo_path}
 Task ID: {task_id}
 Task Description: {description}
 Focus On: {target_concept}
 
-Your job:
+Your job is limited to security analysis:
 1. Start from the verified repository inventory below; do not invent paths.
 2. Use the mcp_search_files tool with glob patterns to find additional relevant files.
 3. Use the mcp_read_file tool to examine files returned by MCP.
-4. Analyze only content returned by MCP and report what you discovered.
+4. Analyze only content returned by MCP and report security vulnerabilities, security controls, and security-relevant observations.
+5. Do not provide general architecture, feature, performance, or code-quality analysis.
 
 Verified repository inventory:
 {repository_inventory}
@@ -245,8 +365,31 @@ If no relevant implementation exists, say "No evidence found in the files search
                                     "pattern": tool_input.get("pattern", "*"),
                                 },
                             )
+                            # Cite only files returned by this task's search,
+                            # rather than attaching repository-wide inventory
+                            # files to every task.
+                            search_repo_path = _resolve_repo_path(
+                                tool_input.get("repo_path", repo_path), repo_path
+                            )
+                            for filepath in _extract_paths(result, search_repo_path)[:8]:
+                                file_result = await mcp_manager.call_tool(
+                                    "filesystem", "read_file", {"path": filepath}
+                                )
+                                if (
+                                    file_result
+                                    and not _is_mcp_error(file_result)
+                                    and not any(
+                                        citation.get("file") == filepath
+                                        for citation in task_findings["file_citations"]
+                                    )
+                                ):
+                                    task_findings["file_citations"].append(
+                                        _line_citation(filepath, file_result)
+                                    )
                         elif tool_name == "mcp_read_file":
-                            filepath = tool_input.get("filepath", "")
+                            filepath = _resolve_repo_path(
+                                tool_input.get("filepath", ""), repo_path
+                            )
                             arguments = {"path": filepath}
                             if tool_input.get("start_line", 1) > 1:
                                 arguments["startLine"] = tool_input["start_line"]
@@ -255,7 +398,7 @@ If no relevant implementation exists, say "No evidence found in the files search
                             result = await mcp_manager.call_tool(
                                 "filesystem", "read_file", arguments
                             )
-                            if result and not result.startswith("Error "):
+                            if result and not _is_mcp_error(result):
                                 task_findings["file_citations"].append(
                                     {
                                         "file": filepath,
@@ -347,14 +490,14 @@ def synthesizer_node(state: ResearchState) -> ResearchState:
 {query}
 
 ## Status
-⚠️ **Invalid Input**: The provided query is not related to codebase analysis or is too vague to decompose into specific research tasks.
+This request is not related to code security or is too vague to decompose into a security investigation.
 
 ## Recommendation
-Please rephrase your query to focus on:
-- Specific code patterns or vulnerabilities (e.g., "Find JWT validation logic")
-- Architecture or design patterns (e.g., "Identify dependency injection usage")
-- Security concerns (e.g., "Find hardcoded secrets")
-- Code organization (e.g., "Map the authentication module")
+Please ask a specific security question, such as:
+- Find JWT validation vulnerabilities
+- Check for hardcoded secrets
+- Analyze authorization and access control
+- Find injection or unsafe input handling risks
 """
         logger.info("Synthesizer: Returned error report for invalid query")
         return {**state, "final_report": final_report}
@@ -402,7 +545,9 @@ Please rephrase your query to focus on:
                 file_path = citation.get("file", "unknown")
                 lines_read = citation.get("lines_read", "?")
                 snippet = citation.get("snippet_preview", "")
-                findings_text += f"  - {file_path} ({lines_read} lines): {snippet}\n"
+                display_path = _relative_path(file_path, state["repo_path"])
+                if "No matches found" not in display_path:
+                    findings_text += f"  - {display_path} ({lines_read}): {snippet}\n"
         if errors:
             findings_text += f"**Errors/Warnings:**\n"
             for error in errors:
@@ -426,7 +571,9 @@ Please rephrase your query to focus on:
 7. Cite only files and line ranges in the Sources allowlist. Never invent filenames, line ranges, snippets, vulnerabilities, or repository structure.
 8. If a claim has no supporting source, write "Not verified from the files read" instead of presenting it as a finding.
 9. If no relevant implementation exists, say "No evidence found in the files searched" and explain the verified search scope. Do not claim the repository is vulnerability-free.
-10. End with concrete remediation recommendations only for confirmed or materially relevant observations.
+10. When the inspected repository has no identity boundary, state this explicitly with wording such as "No authentication" or "No access control" and explain that the feature is not applicable to the repository scope.
+11. Do not mention unrelated vulnerability categories such as SQL injection, CSRF, or JWT validation unless the dossier contains direct evidence for that category. Do not list them merely to say they were not found.
+12. End with concrete remediation recommendations only for confirmed or materially relevant observations.
 
 **Required report structure:**
 # Security & Access Control Analysis Report
@@ -446,7 +593,22 @@ Generate the final report now:"""
 
     try:
         response = llm.invoke(synthesis_prompt)
-        final_report = response.content
+        final_report = _normalize_report_paths(response.content)
+        citation_lines: list[str] = []
+        seen_citations: set[tuple[str, str]] = set()
+        for result in research_results:
+            for citation in result.get("file_citations", []):
+                file_path = _relative_path(
+                    citation.get("file", "unknown"), state["repo_path"]
+                )
+                if "No matches found" in file_path:
+                    continue
+                lines_read = citation.get("lines_read", "Lines 1-1")
+                key = (file_path, lines_read)
+                if key not in seen_citations:
+                    seen_citations.add(key)
+                    citation_lines.append(f"- {file_path} ({lines_read})")
+        final_report = _merge_citations(final_report, citation_lines)
         logger.info("Synthesizer: Report generated successfully")
     except Exception as e:
         logger.error(f"Synthesizer: Error during synthesis: {e}")

@@ -1,0 +1,73 @@
+[
+  {
+    "id": "simple-rag-auth-scope",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Find authentication and authorization vulnerabilities.",
+    "expected_criteria": {
+      "required_sections": ["Executive Summary", "Key Findings", "Limitations"],
+      "required_any_terms": ["no traditional authentication", "no authentication", "no access control", "not found"],
+      "required_any_architecture_terms": ["local", "script", "retrieval", "rag"],
+      "forbidden_terms": ["admin dashboard", "user login endpoint", "role-based access control is implemented"],
+      "min_citations": 1
+    }
+  },
+  {
+    "id": "simple-rag-credential-handling",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Review how API keys and environment configuration are handled and identify credential leakage risks.",
+    "expected_criteria": {
+      "required_sections": ["Executive Summary", "Key Findings", "Citations", "Limitations"],
+      "required_any_terms": ["environment", "api key", "credential", "secret"],
+      "required_any_remediation_terms": [".env", "gitignore", "secret", "environment variable"],
+      "forbidden_terms": ["hardcoded openai key", "exposed production token"],
+      "min_citations": 1
+    }
+  },
+  {
+    "id": "simple-rag-input-boundary",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Trace user query input into retrieval and generation, and assess prompt injection or input handling risks.",
+    "expected_criteria": {
+      "required_sections": ["Executive Summary", "Key Findings", "Limitations"],
+      "required_any_terms": ["query", "prompt", "input", "retrieval", "generation"],
+      "required_any_architecture_terms": ["llm", "model", "rag", "retrieval"],
+      "forbidden_terms": ["sql injection", "csrf protection is missing", "jwt validation is missing"],
+      "min_citations": 1
+    }
+  },
+  {
+    "id": "simple-rag-dependency-risk",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Analyze dependency and configuration files for security-relevant authentication libraries or unsafe defaults.",
+    "expected_criteria": {
+      "required_sections": ["Executive Summary", "Key Findings", "Limitations"],
+      "required_any_terms": ["dependency", "configuration", "package", "library", "requirements", "pyproject"],
+      "required_any_scope_terms": ["no authentication", "not applicable", "not found", "local"],
+      "forbidden_terms": ["cve-", "known vulnerability in", "remote code execution"],
+      "min_citations": 1
+    }
+  },
+  {
+    "id": "simple-rag-data-flow",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Map the repository data flow from ingestion through embeddings, vector retrieval, and response generation, noting security boundaries.",
+    "expected_criteria": {
+      "required_sections": ["Executive Summary", "Repository Scope", "Key Findings", "Limitations"],
+      "required_any_terms": ["ingestion", "embedding", "retrieval", "generation", "vector"],
+      "required_any_architecture_terms": ["pipeline", "local", "rag", "script"],
+      "forbidden_terms": ["authenticated api", "multi-tenant authorization", "session cookie"],
+      "min_citations": 2
+    }
+  },
+  {
+    "id": "simple-rag-non-security-query",
+    "repo_path": "https://github.com/behitek/simple-rag",
+    "query": "Explain the repository architecture and data flow.",
+    "expected_criteria": {
+      "required_sections": ["Status"],
+      "required_any_terms": ["not related to code security"],
+      "forbidden_terms": ["Executive Summary", "Key Findings", "Citations"],
+      "min_citations": 0
+    }
+  }
+]

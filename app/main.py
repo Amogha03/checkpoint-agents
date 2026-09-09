@@ -36,17 +36,17 @@ class ResearchRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    repo_url: HttpUrl = Field(
-        validation_alias=AliasChoices("repo_url", "repo_path"),
+    repo_path: HttpUrl = Field(
+        validation_alias=AliasChoices("repo_path", "repo_url"),
         description="Public or authenticated HTTP(S) repository URL.",
     )
     query: str = Field(min_length=3, max_length=2_000)
 
-    @field_validator("repo_url", mode="before")
+    @field_validator("repo_path", mode="before")
     @classmethod
-    def validate_repo_url(cls, value: object) -> object:
+    def validate_repo_path(cls, value: object) -> object:
         if value is None or not str(value).strip():
-            raise ValueError("repo_url must not be empty")
+            raise ValueError("repo_path must not be empty")
         return value
 
     @field_validator("query", mode="before")
@@ -90,7 +90,7 @@ async def _execute_research(job_id: str, request: ResearchRequest) -> None:
     job_store.mark_running(job_id)
     try:
         workspace_path = await asyncio.to_thread(
-            clone_repository, str(request.repo_url), job_id
+            clone_repository, str(request.repo_path), job_id
         )
         graph = build_codebase_research_graph()
         initial_state: ResearchState = {

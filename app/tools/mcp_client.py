@@ -13,6 +13,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Optional, Any
 
 from langchain_core.tools import tool
+from langsmith import traceable
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import Tool
@@ -197,6 +198,7 @@ class MCPClientManager:
 
         logger.info("✓ MCP connections closed")
 
+    @traceable(name="mcp_call_tool", run_type="tool")
     async def call_tool(self, server: str, tool_name: str, arguments: dict[str, Any]) -> str:
         """
         Call a tool on the specified MCP server.
