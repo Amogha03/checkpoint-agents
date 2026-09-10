@@ -1,6 +1,6 @@
-# Clone & Scan Codebase Analysis
+# Codebase Analysis
 
-Clone & Scan is an internal technical due diligence and code security analysis service. It accepts a remote HTTP(S) repository URL and a security-focused research question, clones the repository into an isolated temporary workspace, and runs a LangGraph workflow that produces a structured Markdown report grounded in source files and line ranges.
+Codebase Analysis is an internal technical due diligence and code security analysis service. It accepts a remote HTTP(S) github repository URL and a security-focused research question, clones the repository into an isolated temporary workspace, and runs a LangGraph workflow that produces a structured Markdown report grounded in source files and line ranges.
 
 The service is intentionally security-focused. It supports questions about authentication, authorization, access control, secrets, sessions, cryptography, injection, unsafe input handling, dependency security, and related risks. The planner rejects general architecture, feature, performance, or unrelated questions with a response explaining that the request is not related to code security.
 
@@ -8,11 +8,13 @@ The service is intentionally security-focused. It supports questions about authe
 
 - [System Overview](#system-overview)
 - [System Architecture and Flow](#system-architecture-and-flow)
+- [LangGraph State Diagram](#langgraph-state-diagram)
 - [MCP Integration](#mcp-integration)
 - [Getting Started](#getting-started)
 - [Running the Service](#running-the-service)
 - [API Smoke Tests](#api-smoke-tests)
 - [Tracing and Evaluation](#tracing-and-evaluation)
+- [LangSmith Trace Screenshots](#langsmith-trace-screenshots)
 - [Architectural Tradeoffs and Design Decisions](#architectural-tradeoffs-and-design-decisions)
 - [Repository Layout](#repository-layout)
 
@@ -82,6 +84,17 @@ sequenceDiagram
 ```
 
 The graph edges are `START -> planner`, conditional `planner -> researcher|synthesizer`, `researcher -> synthesizer`, and `synthesizer -> END`. LangGraph invokes the compiled graph asynchronously through `graph.ainvoke(initial_state)`.
+
+### LangGraph State Diagram
+
+```mermaid
+stateDiagram-v2
+  [*] --> Planner
+  Planner --> Synthesizer: non-security query
+  Planner --> Researcher: security subtasks found
+  Researcher --> Synthesizer: findings and citations
+  Synthesizer --> [*]: final Markdown report
+```
 
 ## MCP Integration
 
@@ -155,9 +168,9 @@ ANTHROPIC_MODEL=claude-haiku-4-5
 | `WORKSPACE_ROOT` | No | Clone root; defaults to `/tmp/workspaces`. |
 | `FILESYSTEM_MCP_ROOT` | No | Filesystem MCP access root; should match the workspace root. |
 | `WORKSPACE_CLEANUP` | No | Remove workspaces after jobs; defaults to `true`. |
-| `LANGCHAIN_TRACING_V2` | No | Set to `true` to enable LangSmith tracing. |
-| `LANGCHAIN_API_KEY` | No | LangSmith API key. `LANGSMITH_API_KEY` is accepted as a fallback. |
-| `LANGCHAIN_PROJECT` | No | LangSmith project; defaults to `codebase-analyzer`. |
+| `LANGSMITH_TRACING_V2` | No | Set to `true` to enable LangSmith tracing. |
+| `LANGSMITH_API_KEY` | No | LangSmith API key. |
+| `LANGSMITH_PROJECT` | No | LangSmith project; defaults to `codebase-analyzer`. |
 | `SERVICE_HOST` | No | Bind host; defaults to `0.0.0.0`. |
 | `SERVICE_PORT` | No | Service port; defaults to `8000`. |
 
@@ -248,15 +261,23 @@ Available endpoints:
 
 ### LangSmith observability
 
-LangSmith tracing is configured by `app/config.py`, which maps the LangSmith settings to the `LANGCHAIN_*` names consumed by LangChain and LangGraph. Enable it with:
+LangSmith tracing is configured by `app/config.py`. Configure only the `LANGSMITH_*` variables in `.env`; the application maps them internally to the runtime names consumed by LangChain and LangGraph. Enable it with:
 
 ```env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your-langsmith-key
-LANGCHAIN_PROJECT=codebase-analyzer
+LANGSMITH_TRACING_V2=true
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=codebase-analyzer
 ```
 
 After restarting the service and submitting a job, open the `codebase-analyzer` project in LangSmith. A trace should show the graph execution, planner and synthesizer LLM calls, researcher tool-calling turns, and the `mcp_call_tool` spans. Tracing is best-effort observability and does not replace source grounding or evaluation.
+
+### LangSmith Trace Screenshots
+
+The following screenshots document one complete LangSmith run. Together they show the LangGraph execution, structured Planner output, repeated Researcher MCP tool calls, and the final Synthesizer stage:
+
+1. [LangGraph trace overview](traces/screenshot1.png)
+2. [Planner structured output and Researcher tool calls](traces/screenshot2.png)
+3. [Researcher execution through Synthesizer completion](traces/screenshot3.png)
 
 ### Golden evaluation
 

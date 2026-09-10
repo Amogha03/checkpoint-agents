@@ -1,4 +1,4 @@
-"""Run structural evaluations against the Clone & Scan HTTP API.
+"""Run structural evaluations against the Codebase Analysis HTTP API.
 
 Usage:
     python -m eval.evaluate --base-url http://localhost:8000

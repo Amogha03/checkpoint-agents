@@ -1,4 +1,4 @@
-"""FastAPI service layer for asynchronous Clone & Scan research jobs."""
+"""FastAPI service layer for asynchronous codebase analysis jobs."""
 
 import asyncio
 import logging

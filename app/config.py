@@ -1,5 +1,5 @@
 """
-Configuration management for the Clone & Scan system.
+Configuration management for the Codebase Analysis system.
 Loads settings from .env file and provides access to LLM configuration.
 """
 
@@ -34,11 +34,6 @@ class Config:
     LANGSMITH_API_KEY: str = _get_env("LANGSMITH_API_KEY")
     LANGSMITH_PROJECT: str = _get_env("LANGSMITH_PROJECT", "codebase-analyzer")
     LANGSMITH_TRACING_V2: str = _get_env("LANGSMITH_TRACING_V2", "true")
-    LANGCHAIN_PROJECT: str = _get_env("LANGCHAIN_PROJECT", LANGSMITH_PROJECT)
-    LANGCHAIN_TRACING_V2: str = _get_env(
-        "LANGCHAIN_TRACING_V2", LANGSMITH_TRACING_V2
-    )
-    LANGCHAIN_API_KEY: str = _get_env("LANGCHAIN_API_KEY", LANGSMITH_API_KEY)
 
     # Service
     SERVICE_PORT: int = int(os.getenv("SERVICE_PORT", "8000"))
@@ -53,11 +48,11 @@ class Config:
 
     @classmethod
     def configure_tracing(cls) -> None:
-        """Export LangSmith settings under the names consumed by LangChain."""
-        os.environ["LANGCHAIN_TRACING_V2"] = cls.LANGCHAIN_TRACING_V2.lower()
-        os.environ["LANGCHAIN_PROJECT"] = cls.LANGCHAIN_PROJECT
-        if cls.LANGCHAIN_API_KEY:
-            os.environ["LANGCHAIN_API_KEY"] = cls.LANGCHAIN_API_KEY
+        """Bridge the public LangSmith settings to LangChain runtime names."""
+        os.environ["LANGCHAIN_TRACING_V2"] = cls.LANGSMITH_TRACING_V2.lower()
+        os.environ["LANGCHAIN_PROJECT"] = cls.LANGSMITH_PROJECT
+        if cls.LANGSMITH_API_KEY:
+            os.environ["LANGCHAIN_API_KEY"] = cls.LANGSMITH_API_KEY
 
     @classmethod
     def validate(cls) -> None:

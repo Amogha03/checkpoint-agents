@@ -8,17 +8,17 @@ version = "0.1.0"
 description = "Service for automated codebase analysis"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic",
-    "langgraph",
-    "langchain",
-    "langchain-core",
-    "langchain-openai",
-    "langchain-anthropic",
-    "python-dotenv",
-    "gitpython",
-    "mcp",
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.4",
+    "pydantic==2.13.5",
+    "langgraph==1.2.11",
+    "langchain==1.4.0",
+    "langchain-core==1.6.2",
+    "langchain-openai==1.6.0",
+    "langchain-anthropic==1.7.1",
+    "python-dotenv==1.2.3",
+    "gitpython==3.1.61",
+    "mcp==1.29.1",
 ]
 
 [tool.setuptools.packages.find]
