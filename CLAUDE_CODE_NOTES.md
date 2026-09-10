@@ -36,7 +36,7 @@ One issue that required correction was an incorrect diagnosis of the repository-
 **Prompt:**
 
 ```text
-You are an expert AI Engineer. We are hardening the production FastAPI service layer for our Codebase Analysis system. 
+We are hardening the production FastAPI service layer for our Codebase Analysis system. 
 
 Your task is to update @main.py and our error/logging utilities to satisfy strict validation, safety, and observability requirements.
 
@@ -51,7 +51,6 @@ Objectives for Request Validation, Error Handling & Logging
 - Implement global FastAPI exception handlers for `HTTPException` and unhandled general `Exception`s.
 - Never leak raw Python stack traces or internal traceback details to API clients.
 - Return a standardized, structured JSON error response format:
-  ```json
   {
     "error": "Bad Request | Not Found | Internal Server Error",
     "detail": "Descriptive, safe message explaining the failure",
