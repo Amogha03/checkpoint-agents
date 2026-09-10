@@ -346,6 +346,7 @@ app/
 eval/
   golden_dataset.json     Golden security-analysis tasks
   evaluate.py             Deterministic HTTP evaluation runner
+traces/                   LangSmith trace screenshots
 Dockerfile                Container image definition
 Project-instructions.md   Product requirements and architecture notes
 ```
