@@ -135,6 +135,21 @@ From the repository root:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+```
+or
+```
+rm -rf .venv
+curl -sSL https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install -e .
+```
+
+`pyproject.toml` declares the dependencies but does not install them by itself. Use Python 3.11 or newer, activate `.venv` before running the service, and select `.venv/bin/python` as the interpreter in VS Code. If FastAPI is reported as missing, verify the active environment with `python --version` and install the project dependencies with `uv pip install -e .` (or `pip install -e .` when pip is available).
+
+then
+```
 cp .env.example .env
 mkdir -p /tmp/workspaces
 ```
