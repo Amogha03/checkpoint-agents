@@ -7,7 +7,7 @@
 **Answer:**
 
 An LLM chain follows a set sequence of steps, while an agent can decide what to do next based on what it learns along the way.
-For example, the Researcher in this workflow acts like an agent because it chooses which MCP search or file-reading tools to use, looks at the results, and decides whether it needs to keep investigating. That ability to choose and adapt its actions is what makes the system agentic rather than just a fixed LLM chain.
+For example, the Researcher in this project acts like an agent because it chooses which MCP search or file-reading tools to use, looks at the results, and decides whether it needs to keep investigating. That ability to choose and adapt its actions is what makes the system agentic rather than just a fixed LLM chain.
 
 
 ## Q2 (3 pts)
@@ -29,7 +29,7 @@ For example, the Researcher in this workflow acts like an agent because it choos
 
 A regular edge always sends execution to a specific next node. In this system, the  edge from `START` to `planner` and the edge from `researcher` to `synthesizer` are regular edges because those transitions always happen. A conditional edge chooses the next node by evaluating the current state (based on a condition). After the Planner runs, the graph checks whether subtasks were created: a non-security query goes directly to the Synthesizer, while a valid security query goes to the Researcher.
 
-The State object is the shared data passed through all the nodes in the graph. In this build, `ResearchState` carries the repository path, original query, planned subtasks, research results, final report, and error status. Each node reads the fields it needs and returns updates, which LangGraph merges into the state before passing it to the next node. This lets the nodes communicate through structured data without directly calling one another.
+The State object is the shared data passed through all the nodes in the graph. In this build, `ResearchState` carries the repository path, original query, planned subtasks, research results, final report, and error status. Each node reads the fields it needs and returns updates, which LangGraph merges into the state before passing it to the next node. This lets the nodescommunicate through structured data without directly calling one another.
 
 
 ## Q4 (4 pts)
@@ -41,7 +41,7 @@ The State object is the shared data passed through all the nodes in the graph. I
 The **supervisor pattern** has one supervisor agent decide which specialist agent should act next and combine the results. It is a good fit for a customer-support system where a supervisor routes a request to billing, technical support, or account-security agents.
 The **hierarchical pattern** has multiple levels of coordination, such as a manager agent delegating to a domain supervisor that then delegates to smaller workers. It is useful for a large security review where a top-level agent assigns work to authentication, dependency, and data-security supervisors.
 The **swarm pattern** allows several peer agents to collaborate more independently by handing work to one another. It is useful for brainstorming or research where several agents can explore different hypotheses in parallel and share findings.
-The tradeoff is that supervisors provide more control, hierarchies provide scalability, and swarms provide flexibility but are harder to coordinate and evaluate.
+The tradeoff is that supervisors provide more control, heirarchies provide scalability, and swarms provide flexibility but are harder to coordinate and evaluate.
 
 
 ## Q5 (3 pts)
@@ -52,7 +52,7 @@ The tradeoff is that supervisors provide more control, hierarchies provide scala
 
 - **The agent chooses the wrong collections or fields:** It may misunderstand the question or the database schema. **Hardening:** Give it an up-to-date schema, require it to explain which collections and fields it selected, and validate those names against an allowlisted schema before execution.
 - **The cross-collection query is logically wrong:** It may join on the wrong key, use the wrong relationship, or return duplicate or incomplete records. **Hardening:** Have the agent create an explicit query plan, validate the relationship between the collections, and run a small read-only test or count check before returning the final answer.
-- **The generated query is unsafe or too expensive:** The agent could produce an unbounded scan, access fields it should not expose, or generate an invalid query that fails at runtime. **Hardening:** Use read-only database credentials, enforce collection and field permissions, add timeouts and result limits, validate the generated query, and return a safe error with a retry or clarification path.
+- **The generated query is unsafe or too expensive:** The agent could access fields it should not expose, or generate an invalid query that fails at runtime. **Hardening:** Use read-only database credentials, enforce collection and field permissions, add timeouts and result limits, validate the generated query, and return a safe error with a retry.
 - **One collection succeeds while the other fails:** A partial result could be presented as if it answered the full question. **Hardening:** Treat the operation as a multi-step workflow with explicit success checks for both queries, preserve errors in state, and only synthesize a final answer when all required evidence is available.
 
 
