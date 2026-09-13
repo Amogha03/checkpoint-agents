@@ -17,6 +17,7 @@ The service is intentionally security-focused. It supports questions about authe
 - [LangSmith Trace Screenshots](#langsmith-trace-screenshots)
 - [Architectural Tradeoffs and Design Decisions](#architectural-tradeoffs-and-design-decisions)
 - [Repository Layout](#repository-layout)
+- [Loom Walkthrough](#loom-walkthrough)
 
 ## System Overview
 
@@ -381,3 +382,11 @@ pytest
 ```
 
 When changing prompts, MCP schemas, or citation formatting, run the golden evaluator and inspect both the report text and the LangSmith trace.
+
+## Loom Walkthrough
+
+https://www.loom.com/share/84293d41f67b49ebad05806bad34a1c8
+https://www.loom.com/share/d1e1bc5ea2e54d52a52631ee293840d2
+https://www.loom.com/share/21d4dcf70352484ab5b7aab4b6995d6e
+https://www.loom.com/share/fb5d5a18d32841fc8b51e9ec0ab3c9a4
+https://www.loom.com/share/9349bf9c28884edaa0a8390e34c9646d
